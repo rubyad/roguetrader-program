@@ -66,9 +66,10 @@ pub fn handler<'info>(
     let mut seen_bot_ids: [bool; 31] = [false; 31];
     for acct in ctx.remaining_accounts.iter() {
         let cp_vault_check = Account::<AgentVault>::try_from(acct)?;
+        // Use ctx.program_id (not crate::ID which is mainnet-only)
         let (expected_pda, _) = Pubkey::find_program_address(
             &[b"agent_vault", cp_vault_check.bot_id.to_le_bytes().as_ref()],
-            &crate::ID,
+            ctx.program_id,
         );
         require!(acct.key() == expected_pda, RogueTraderError::InvalidCounterpartyVault);
         let bid = cp_vault_check.bot_id as usize;

@@ -153,10 +153,11 @@ pub fn handler<'info>(
     for (i, acct) in ctx.remaining_accounts.iter().enumerate() {
         let cp_vault = Account::<AgentVault>::try_from(acct)?;
 
-        // Verify this is a real AgentVault PDA
+        // Verify this is a real AgentVault PDA (use ctx.program_id, not crate::ID,
+        // because crate::ID is the mainnet program ID which differs on devnet)
         let (expected_pda, _) = Pubkey::find_program_address(
             &[b"agent_vault", cp_vault.bot_id.to_le_bytes().as_ref()],
-            &crate::ID,
+            ctx.program_id,
         );
         require!(
             acct.key() == expected_pda,

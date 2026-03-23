@@ -72,6 +72,6 @@ pub struct ClearingHouseState {
     // L-4: Two-step authority transfer
     pub pending_authority: Pubkey,    // 32 — Pubkey::default() = no pending transfer
 
-    pub _reserved: [u8; 74],          // 74 (was 110, used 3 for pause flags + 32 for pending_authority + 1 padding)
+    pub _reserved: [u8; 74],          // 74 (was 110, used 36 for new fields: 3 pause flags + 32 pending_authority + 1 byte consumed by serialization alignment)
 }
 // Total: ~585 bytes (unchanged — consumed from _reserved)
