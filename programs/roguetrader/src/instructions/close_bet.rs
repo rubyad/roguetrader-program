@@ -21,8 +21,13 @@ pub struct CloseBet<'info> {
     )]
     pub bet: Account<'info, Bet>,
 
-    /// Receives the rent from closing the bet account
-    #[account(mut)]
+    /// Receives the rent from closing the bet account — must be authority or settler
+    #[account(
+        mut,
+        constraint = rent_receiver.key() == clearing_house.authority
+            || rent_receiver.key() == clearing_house.settler
+            @ crate::errors::RogueTraderError::Unauthorized
+    )]
     pub rent_receiver: Signer<'info>,
 }
 

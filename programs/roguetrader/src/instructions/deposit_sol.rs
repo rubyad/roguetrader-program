@@ -3,7 +3,7 @@ use anchor_lang::system_program;
 use anchor_spl::token::{self, Mint, MintTo, Token, TokenAccount};
 use crate::state::{AgentVault, ClearingHouseState, PlayerState};
 use crate::errors::RogueTraderError;
-use crate::events::DepositCompleted;
+use crate::events::{DepositCompleted, FeeTransferFailed};
 
 #[derive(Accounts)]
 pub struct DepositSol<'info> {
@@ -45,8 +45,12 @@ pub struct DepositSol<'info> {
     )]
     pub lp_authority: AccountInfo<'info>,
 
-    /// User's LP token account (ATA)
-    #[account(mut)]
+    /// User's LP token account (ATA) — I-6: validated mint and owner at Anchor level
+    #[account(
+        mut,
+        token::mint = lp_mint,
+        token::authority = depositor,
+    )]
     pub user_lp_account: Account<'info, TokenAccount>,
 
     /// Player state for referral tracking (auto-created on first deposit)
@@ -62,24 +66,39 @@ pub struct DepositSol<'info> {
     #[account(mut)]
     pub depositor: Signer<'info>,
 
-    /// CHECK: Tier-1 referrer wallet (best-effort transfer)
-    #[account(mut)]
+    /// CHECK: Tier-1 referrer wallet — validated against PlayerState
+    #[account(
+        mut,
+        constraint = referrer.key() == player_state.referrer @ RogueTraderError::InvalidFeeWallet
+    )]
     pub referrer: AccountInfo<'info>,
 
-    /// CHECK: Tier-2 referrer wallet (best-effort transfer)
-    #[account(mut)]
+    /// CHECK: Tier-2 referrer wallet — validated against PlayerState
+    #[account(
+        mut,
+        constraint = tier2_referrer.key() == player_state.tier2_referrer @ RogueTraderError::InvalidFeeWallet
+    )]
     pub tier2_referrer: AccountInfo<'info>,
 
-    /// CHECK: Bonus wallet
-    #[account(mut)]
+    /// CHECK: Bonus wallet — validated against ClearingHouseState
+    #[account(
+        mut,
+        constraint = bonus_wallet.key() == clearing_house.bonus_wallet @ RogueTraderError::InvalidFeeWallet
+    )]
     pub bonus_wallet: AccountInfo<'info>,
 
-    /// CHECK: NFT rewarder wallet
-    #[account(mut)]
+    /// CHECK: NFT rewarder wallet — validated against ClearingHouseState
+    #[account(
+        mut,
+        constraint = nft_rewarder.key() == clearing_house.nft_rewarder @ RogueTraderError::InvalidFeeWallet
+    )]
     pub nft_rewarder: AccountInfo<'info>,
 
-    /// CHECK: Platform wallet
-    #[account(mut)]
+    /// CHECK: Platform wallet — validated against ClearingHouseState
+    #[account(
+        mut,
+        constraint = platform_wallet.key() == clearing_house.platform_wallet @ RogueTraderError::InvalidFeeWallet
+    )]
     pub platform_wallet: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
@@ -87,7 +106,7 @@ pub struct DepositSol<'info> {
 }
 
 /// Best-effort SOL transfer from vault PDA to recipient.
-/// Ignores failures — fee stays in vault (benefits LP holders).
+/// Emits FeeTransferFailed event on failure — fee stays in vault (benefits LP holders).
 pub fn distribute_fee<'info>(
     vault: &AccountInfo<'info>,
     recipient: &AccountInfo<'info>,
@@ -97,20 +116,29 @@ pub fn distribute_fee<'info>(
     share_bps: u16,
     total_bps: u16,
 ) {
-    if share_bps == 0 || *recipient.key == Pubkey::default() || fee == 0 {
+    if share_bps == 0 || *recipient.key == Pubkey::default() || fee == 0 || total_bps == 0 {
         return;
     }
     let share = (fee as u128 * share_bps as u128 / total_bps as u128) as u64;
     if share == 0 {
         return;
     }
-    let _ = anchor_lang::solana_program::program::invoke_signed(
+    match anchor_lang::solana_program::program::invoke_signed(
         &anchor_lang::solana_program::system_instruction::transfer(
             vault.key, recipient.key, share,
         ),
         &[vault.clone(), recipient.clone(), system_program.clone()],
         &[vault_seeds],
-    );
+    ) {
+        Ok(()) => {}
+        Err(_) => {
+            emit!(FeeTransferFailed {
+                recipient: *recipient.key,
+                amount: share,
+                timestamp: Clock::get().map(|c| c.unix_timestamp).unwrap_or(0),
+            });
+        }
+    }
 }
 
 pub fn handler(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
@@ -123,7 +151,11 @@ pub fn handler(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
     let platform_bps = ctx.accounts.clearing_house.platform_fee_bps;
     let vault_bump = ctx.accounts.clearing_house.vault_bump;
 
-    require!(!ctx.accounts.clearing_house.paused, RogueTraderError::Paused);
+    // L-6: Use granular pause flag (deposits_paused) with legacy fallback
+    require!(
+        !ctx.accounts.clearing_house.deposits_paused && !ctx.accounts.clearing_house.paused,
+        RogueTraderError::Paused
+    );
     require!(amount > 0, RogueTraderError::ZeroAmount);
 
     let bot_id = ctx.accounts.agent_vault.bot_id;

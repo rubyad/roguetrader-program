@@ -16,6 +16,7 @@ pub mod expire_stale_bet;
 pub mod admin_reset_vault;
 pub mod create_lp_metadata;
 pub mod update_lp_metadata;
+pub mod transfer_authority;
 
 pub use initialize::*;
 pub use create_agent_vault::*;
@@ -35,3 +36,4 @@ pub use expire_stale_bet::*;
 pub use admin_reset_vault::*;
 pub use create_lp_metadata::*;
 pub use update_lp_metadata::*;
+pub use transfer_authority::*;

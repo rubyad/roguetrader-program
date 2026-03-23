@@ -142,9 +142,15 @@ pub mod roguetrader {
         instructions::update_group_feeds::handler(ctx, group_id, pyth_feeds, feed_count)
     }
 
-    /// Emergency pause all operations
-    pub fn pause(ctx: Context<Pause>, paused: bool) -> Result<()> {
-        instructions::pause::handler(ctx, paused)
+    /// Emergency pause all operations (with optional granular control)
+    pub fn pause(
+        ctx: Context<Pause>,
+        paused: bool,
+        deposits_paused: Option<bool>,
+        withdrawals_paused: Option<bool>,
+        betting_paused: Option<bool>,
+    ) -> Result<()> {
+        instructions::pause::handler(ctx, paused, deposits_paused, withdrawals_paused, betting_paused)
     }
 
     // ========================================================================
@@ -238,5 +244,15 @@ pub mod roguetrader {
         counterparty_locked_sol: u64,
     ) -> Result<()> {
         instructions::admin_reset_vault::handler(ctx, active_bet_count, locked_sol, counterparty_locked_sol)
+    }
+
+    /// L-4: Current authority proposes a new authority (step 1 of 2)
+    pub fn propose_authority_transfer(ctx: Context<ProposeAuthorityTransfer>) -> Result<()> {
+        instructions::transfer_authority::propose_handler(ctx)
+    }
+
+    /// L-4: New authority accepts the transfer (step 2 of 2)
+    pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
+        instructions::transfer_authority::accept_handler(ctx)
     }
 }

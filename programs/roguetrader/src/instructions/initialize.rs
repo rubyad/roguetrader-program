@@ -126,8 +126,16 @@ pub fn handler(
     // Stale bet buffer: 120 seconds default
     clearing_house.stale_bet_buffer_secs = 120;
 
+    // L-6: Granular pause flags (all false by default)
+    clearing_house.deposits_paused = false;
+    clearing_house.withdrawals_paused = false;
+    clearing_house.betting_paused = false;
+
+    // L-4: No pending authority transfer
+    clearing_house.pending_authority = Pubkey::default();
+
     // Reserved
-    clearing_house._reserved = [0u8; 110];
+    clearing_house._reserved = [0u8; 74];
 
     let clock = Clock::get()?;
     emit!(ClearingHouseInitialized {

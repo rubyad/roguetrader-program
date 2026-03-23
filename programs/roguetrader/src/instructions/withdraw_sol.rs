@@ -37,8 +37,12 @@ pub struct WithdrawSol<'info> {
     )]
     pub lp_mint: Account<'info, Mint>,
 
-    /// User's LP token account (ATA)
-    #[account(mut)]
+    /// User's LP token account (ATA) — I-6: validated mint and owner at Anchor level
+    #[account(
+        mut,
+        token::mint = lp_mint,
+        token::authority = withdrawer,
+    )]
     pub user_lp_account: Account<'info, TokenAccount>,
 
     /// Player state for tracking (auto-created if needed)
@@ -54,24 +58,39 @@ pub struct WithdrawSol<'info> {
     #[account(mut)]
     pub withdrawer: Signer<'info>,
 
-    /// CHECK: Tier-1 referrer wallet
-    #[account(mut)]
+    /// CHECK: Tier-1 referrer wallet — validated against PlayerState
+    #[account(
+        mut,
+        constraint = referrer.key() == player_state.referrer @ RogueTraderError::InvalidFeeWallet
+    )]
     pub referrer: AccountInfo<'info>,
 
-    /// CHECK: Tier-2 referrer wallet
-    #[account(mut)]
+    /// CHECK: Tier-2 referrer wallet — validated against PlayerState
+    #[account(
+        mut,
+        constraint = tier2_referrer.key() == player_state.tier2_referrer @ RogueTraderError::InvalidFeeWallet
+    )]
     pub tier2_referrer: AccountInfo<'info>,
 
-    /// CHECK: Bonus wallet
-    #[account(mut)]
+    /// CHECK: Bonus wallet — validated against ClearingHouseState
+    #[account(
+        mut,
+        constraint = bonus_wallet.key() == clearing_house.bonus_wallet @ RogueTraderError::InvalidFeeWallet
+    )]
     pub bonus_wallet: AccountInfo<'info>,
 
-    /// CHECK: NFT rewarder wallet
-    #[account(mut)]
+    /// CHECK: NFT rewarder wallet — validated against ClearingHouseState
+    #[account(
+        mut,
+        constraint = nft_rewarder.key() == clearing_house.nft_rewarder @ RogueTraderError::InvalidFeeWallet
+    )]
     pub nft_rewarder: AccountInfo<'info>,
 
-    /// CHECK: Platform wallet
-    #[account(mut)]
+    /// CHECK: Platform wallet — validated against ClearingHouseState
+    #[account(
+        mut,
+        constraint = platform_wallet.key() == clearing_house.platform_wallet @ RogueTraderError::InvalidFeeWallet
+    )]
     pub platform_wallet: AccountInfo<'info>,
 
     pub system_program: Program<'info, System>,
@@ -88,7 +107,11 @@ pub fn handler(ctx: Context<WithdrawSol>, lp_amount: u64) -> Result<()> {
     let platform_bps = ctx.accounts.clearing_house.platform_fee_bps;
     let vault_bump = ctx.accounts.clearing_house.vault_bump;
 
-    require!(!ctx.accounts.clearing_house.paused, RogueTraderError::Paused);
+    // L-6: Use granular pause flag (withdrawals_paused) with legacy fallback
+    require!(
+        !ctx.accounts.clearing_house.withdrawals_paused && !ctx.accounts.clearing_house.paused,
+        RogueTraderError::Paused
+    );
     require!(lp_amount > 0, RogueTraderError::ZeroAmount);
 
     let bot_id = ctx.accounts.agent_vault.bot_id;

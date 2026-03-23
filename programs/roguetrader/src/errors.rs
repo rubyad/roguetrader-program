@@ -94,4 +94,48 @@ pub enum RogueTraderError {
 
     #[msg("Invalid LP amount")]
     InvalidLpAmount,                        // 6030
+
+    // === Security audit fixes (H-1, H-2, H-3, M-2, M-3, M-4, M-5, M-6) ===
+
+    #[msg("Fee wallet does not match expected address")]
+    InvalidFeeWallet,                       // 6031
+
+    #[msg("Proposer vault bot_id does not match bet proposer")]
+    VaultBetMismatch,                       // 6032
+
+    #[msg("Pyth price feed account is not owned by the Pyth Receiver program")]
+    InvalidPythAccount,                     // 6033
+
+    #[msg("Fee splits do not match withdrawal fee configuration")]
+    InvalidWithdrawalFeeSplit,              // 6034
+
+    #[msg("Settlement window has expired — use expire_stale_bet instead")]
+    SettlementWindowExpired,                // 6035
+
+    #[msg("Counterparty vault PDA does not match expected derivation")]
+    InvalidCounterpartyVault,               // 6036
+
+    #[msg("Duplicate counterparty bot_id in remaining_accounts")]
+    DuplicateCounterparty,                  // 6037
+
+    #[msg("Proposer cannot be its own counterparty")]
+    SelfCounterparty,                       // 6038
+
+    #[msg("Missing required counterparty vault for settlement")]
+    MissingCounterparty,                    // 6039
+
+    #[msg("Oracle price is non-positive")]
+    InvalidPrice,                           // 6040
+
+    #[msg("Bet duration must be between 30 seconds and 24 hours")]
+    InvalidDuration,                        // 6041
+
+    #[msg("Unauthorized — only authority or settler may call this")]
+    Unauthorized,                           // 6042
+
+    #[msg("Pending authority does not match signer")]
+    InvalidPendingAuthority,                // 6043
+
+    #[msg("No pending authority transfer")]
+    NoPendingTransfer,                      // 6044
 }

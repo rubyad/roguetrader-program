@@ -63,6 +63,15 @@ pub struct ClearingHouseState {
     // Stale bet expiry buffer in seconds (0 = use default 120)
     pub stale_bet_buffer_secs: i64,   // 8 — configurable via update_config
 
-    pub _reserved: [u8; 110],          // 110 (was 118, used 8 for stale_bet_buffer_secs)
+    // L-6: Granular pause flags (deposits_paused reuses the `paused` byte position concept
+    // but is a separate field stored after stale_bet_buffer_secs)
+    pub deposits_paused: bool,        // 1
+    pub withdrawals_paused: bool,     // 1
+    pub betting_paused: bool,         // 1
+
+    // L-4: Two-step authority transfer
+    pub pending_authority: Pubkey,    // 32 — Pubkey::default() = no pending transfer
+
+    pub _reserved: [u8; 74],          // 74 (was 110, used 3 for pause flags + 32 for pending_authority + 1 padding)
 }
-// Total: ~585 bytes (unchanged)
+// Total: ~585 bytes (unchanged — consumed from _reserved)

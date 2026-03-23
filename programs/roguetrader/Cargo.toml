@@ -10,6 +10,7 @@ name = "roguetrader"
 
 [features]
 default = []
+devnet = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

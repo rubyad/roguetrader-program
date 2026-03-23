@@ -17,11 +17,12 @@ pub struct SettleBet<'info> {
     )]
     pub clearing_house: Box<Account<'info, ClearingHouseState>>,
 
-    /// Proposer bot's AgentVault (for win rate update)
+    /// Proposer bot's AgentVault (for win rate update) — must match bet.proposer_bot
     #[account(
         mut,
         seeds = [b"agent_vault", proposer_vault.bot_id.to_le_bytes().as_ref()],
         bump = proposer_vault.bump,
+        constraint = proposer_vault.bot_id == bet.proposer_bot @ RogueTraderError::VaultBetMismatch,
     )]
     pub proposer_vault: Box<Account<'info, AgentVault>>,
 
@@ -33,8 +34,11 @@ pub struct SettleBet<'info> {
     )]
     pub bet: Box<Account<'info, Bet>>,
 
-    /// Pyth price feed — must match bet.pyth_feed
-    /// CHECK: Validated in handler
+    /// Pyth price feed — must match bet.pyth_feed and be owned by Pyth Receiver
+    /// CHECK: Owner validated here; data validated in handler
+    #[account(
+        owner = crate::pyth::PYTH_RECEIVER_PROGRAM_ID @ RogueTraderError::InvalidPythAccount
+    )]
     pub pyth_price_feed: AccountInfo<'info>,
 
     /// Settler signer
@@ -56,6 +60,20 @@ pub fn handler<'info>(
     let clock = Clock::get()?;
     require!(clock.unix_timestamp >= bet.expiry_timestamp, RogueTraderError::BetNotExpired);
 
+    // M-3: Settlement must occur within the stale_bet_buffer window
+    let buffer = if ctx.accounts.clearing_house.stale_bet_buffer_secs > 0 {
+        ctx.accounts.clearing_house.stale_bet_buffer_secs
+    } else {
+        120 // default
+    };
+    let max_settle_time = bet.expiry_timestamp
+        .checked_add(buffer)
+        .ok_or(RogueTraderError::MathOverflow)?;
+    require!(
+        clock.unix_timestamp <= max_settle_time,
+        RogueTraderError::SettlementWindowExpired
+    );
+
     // Validate Pyth feed matches bet
     require!(
         ctx.accounts.pyth_price_feed.key() == bet.pyth_feed,
@@ -69,8 +87,11 @@ pub fn handler<'info>(
         let price_msg = price_update
             .get_price_no_older_than(&clock, MAX_PRICE_AGE)?;
 
+        // M-5: Reject non-positive prices
+        require!(price_msg.price > 0, RogueTraderError::InvalidPrice);
+        let abs_price = price_msg.price as u64; // Safe after positive check
+
         // Validate confidence
-        let abs_price = (price_msg.price as u64).max(1);
         let conf_bps = (price_msg.conf as u128)
             .checked_mul(10_000)
             .unwrap()
@@ -103,6 +124,32 @@ pub fn handler<'info>(
         }
     };
 
+    // M-4: Validate counterparty vaults — PDA check, uniqueness, completeness
+    let mut seen_bot_ids: [bool; 30] = [false; 30];
+    for acct in ctx.remaining_accounts.iter() {
+        let cp_vault_check = Account::<AgentVault>::try_from(acct)?;
+        let (expected_pda, _) = Pubkey::find_program_address(
+            &[b"agent_vault", cp_vault_check.bot_id.to_le_bytes().as_ref()],
+            &crate::ID,
+        );
+        require!(acct.key() == expected_pda, RogueTraderError::InvalidCounterpartyVault);
+        let bid = cp_vault_check.bot_id as usize;
+        require!(bid < 30, RogueTraderError::InvalidCounterpartyVault);
+        require!(!seen_bot_ids[bid], RogueTraderError::DuplicateCounterparty);
+        seen_bot_ids[bid] = true;
+    }
+
+    // Verify all counterparties from the bet are present
+    for cp in bet.counterparties[..bet.cp_count as usize].iter() {
+        if cp.stake > 0 {
+            require!(
+                seen_bot_ids[cp.bot_id as usize],
+                RogueTraderError::MissingCounterparty
+            );
+        }
+    }
+
+    // Reset for actual processing
     // Redistribute sol_balance across counterparties
     for acct in ctx.remaining_accounts.iter() {
         let mut cp_vault = Account::<AgentVault>::try_from(acct)?;

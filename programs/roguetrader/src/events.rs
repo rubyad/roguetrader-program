@@ -147,3 +147,43 @@ pub struct StaleBetExpired {
     pub locked_sol_returned: u64,
     pub timestamp: i64,
 }
+
+// ============================================================================
+// Security Audit Events
+// ============================================================================
+
+/// M-1: Emitted when a fee transfer CPI fails (fee stays in vault)
+#[event]
+pub struct FeeTransferFailed {
+    pub recipient: Pubkey,
+    pub amount: u64,
+    pub timestamp: i64,
+}
+
+/// M-9: Emitted when a Pubkey config field changes (settler, wallets, ALT)
+#[event]
+pub struct ConfigPubkeyUpdated {
+    pub field_id: u8,
+    pub old_value: Pubkey,
+    pub new_value: Pubkey,
+    pub authority: Pubkey,
+    pub timestamp: i64,
+}
+
+/// L-4: Emitted when authority is transferred
+#[event]
+pub struct AuthorityTransferred {
+    pub old_authority: Pubkey,
+    pub new_authority: Pubkey,
+    pub timestamp: i64,
+}
+
+/// L-6: Emitted when granular pause state changes
+#[event]
+pub struct PauseStateChanged {
+    pub authority: Pubkey,
+    pub deposits_paused: bool,
+    pub withdrawals_paused: bool,
+    pub betting_paused: bool,
+    pub timestamp: i64,
+}

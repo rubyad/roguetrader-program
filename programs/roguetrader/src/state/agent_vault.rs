@@ -120,8 +120,34 @@ impl AgentVault {
 
     /// Record a bet outcome in the rolling window.
     /// win: true = win (1), false = loss (0). Ties should NOT call this.
+    /// M-7: Handles window size reduction by trimming stale data.
     pub fn update_win_rate(&mut self, win: bool, window_size: u8) {
         let ws = if window_size == 0 { Self::DEFAULT_WINDOW_SIZE } else { window_size.min(100) };
+
+        // M-7: If window_count exceeds current window size (window was reduced),
+        // trim stale data before recording the new outcome
+        if self.window_count > ws {
+            let mut valid_wins: u8 = 0;
+            for j in 0..ws {
+                let idx = if self.window_head >= j + 1 {
+                    (self.window_head - j - 1) as usize
+                } else {
+                    (ws - (j + 1 - self.window_head)) as usize
+                };
+                if idx < 100 && self.bet_window[idx] == 1 {
+                    valid_wins += 1;
+                }
+            }
+            self.wins_in_window = valid_wins;
+            self.window_count = ws;
+            // Clear slots beyond new window size
+            for j in (ws as usize)..100 {
+                self.bet_window[j] = 0;
+            }
+            // Reset head to wrap within new size
+            self.window_head = self.window_head % ws;
+        }
+
         let idx = self.window_head as usize;
 
         if self.window_count >= ws {

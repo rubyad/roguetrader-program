@@ -11,6 +11,10 @@ use crate::pyth::PriceUpdateV2;
 const MAX_PRICE_AGE: u64 = 60;
 /// Max confidence interval as percentage of price (2% = 200 bps)
 const MAX_CONF_BPS: u64 = 200;
+/// M-6: Minimum bet duration (30 seconds)
+const MIN_BET_DURATION: i64 = 30;
+/// M-6: Maximum bet duration (24 hours)
+const MAX_BET_DURATION: i64 = 86_400;
 
 #[derive(Accounts)]
 pub struct ProposeBet<'info> {
@@ -39,8 +43,11 @@ pub struct ProposeBet<'info> {
     )]
     pub bet: Box<Account<'info, Bet>>,
 
-    /// Pyth price feed account
-    /// CHECK: Validated in handler via local PriceUpdateV2 deserialization
+    /// Pyth price feed account — must be owned by Pyth Receiver program
+    /// CHECK: Owner validated here; discriminator/feed/staleness/confidence validated in handler
+    #[account(
+        owner = crate::pyth::PYTH_RECEIVER_PROGRAM_ID @ RogueTraderError::InvalidPythAccount
+    )]
     pub pyth_price_feed: AccountInfo<'info>,
 
     /// Group config for feed validation
@@ -69,10 +76,19 @@ pub fn handler<'info>(
     duration_seconds: i64,
 ) -> Result<()> {
     // Guards
-    require!(!ctx.accounts.clearing_house.paused, RogueTraderError::Paused);
+    // L-6: Use granular pause flag (betting_paused) with legacy fallback
+    require!(
+        !ctx.accounts.clearing_house.betting_paused && !ctx.accounts.clearing_house.paused,
+        RogueTraderError::Paused
+    );
     require!(
         ctx.accounts.proposer_vault.active_bet_count < AgentVault::MAX_ACTIVE_BETS,
         RogueTraderError::MaxActiveBetsReached
+    );
+    // M-6: Validate bet duration bounds
+    require!(
+        duration_seconds >= MIN_BET_DURATION && duration_seconds <= MAX_BET_DURATION,
+        RogueTraderError::InvalidDuration
     );
 
     let dir = match direction {
@@ -96,8 +112,11 @@ pub fn handler<'info>(
         let price_msg = price_update
             .get_price_no_older_than(&clock, MAX_PRICE_AGE)?;
 
+        // M-5: Reject non-positive prices (all RogueTrader assets are always positive)
+        require!(price_msg.price > 0, RogueTraderError::InvalidPrice);
+        let abs_price = price_msg.price as u64; // Safe after positive check
+
         // Validate confidence interval < 2% of price
-        let abs_price = (price_msg.price as u64).max(1);
         let conf_bps = (price_msg.conf as u128)
             .checked_mul(10_000)
             .unwrap()
@@ -125,12 +144,37 @@ pub fn handler<'info>(
     require!(ctx.remaining_accounts.len() == MAX_COUNTERPARTIES, RogueTraderError::CounterpartyCountMismatch);
 
     // First pass: sum total free capital and compute capped total
+    // M-4: Validate PDA derivation, uniqueness, and no self-counterparty
     let mut total_free: u64 = 0;
     let mut cp_frees: [u64; 29] = [0u64; 29];
     let mut cp_caps: [u64; 29] = [0u64; 29];
+    let mut seen_bot_ids: [bool; 30] = [false; 30];
 
     for (i, acct) in ctx.remaining_accounts.iter().enumerate() {
         let cp_vault = Account::<AgentVault>::try_from(acct)?;
+
+        // Verify this is a real AgentVault PDA
+        let (expected_pda, _) = Pubkey::find_program_address(
+            &[b"agent_vault", cp_vault.bot_id.to_le_bytes().as_ref()],
+            &crate::ID,
+        );
+        require!(
+            acct.key() == expected_pda,
+            RogueTraderError::InvalidCounterpartyVault
+        );
+
+        // No duplicate bot_ids
+        let bid = cp_vault.bot_id as usize;
+        require!(bid < 30, RogueTraderError::InvalidCounterpartyVault);
+        require!(!seen_bot_ids[bid], RogueTraderError::DuplicateCounterparty);
+        seen_bot_ids[bid] = true;
+
+        // Counterparty must not be the proposer
+        require!(
+            cp_vault.bot_id != proposer_bot_id,
+            RogueTraderError::SelfCounterparty
+        );
+
         let cp_free = cp_vault.free_capital();
         cp_frees[i] = cp_free;
         total_free = total_free

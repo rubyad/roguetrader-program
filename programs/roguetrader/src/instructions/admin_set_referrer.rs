@@ -74,18 +74,22 @@ pub fn handler(
 
     player_state.referrer = referrer_key;
 
-    // Try tier-2 resolution from referrer's player state (if it exists and has data)
+    // M-10: Try tier-2 resolution using Anchor deserialization (not raw byte offsets)
     let referrer_ps_info = &ctx.accounts.referrer_player_state;
-    if referrer_ps_info.data_len() > 8 + 32 && referrer_ps_info.owner == &crate::ID {
-        // Read the referrer field directly from raw data (offset 8 discriminator + 32 wallet = 40, referrer at 40)
+    if referrer_ps_info.data_len() > 8 && referrer_ps_info.owner == &crate::ID {
         let data = referrer_ps_info.try_borrow_data()?;
-        if data.len() >= 72 {
-            let referrer_of_referrer = Pubkey::try_from(&data[40..72])
-                .unwrap_or_default();
-            if referrer_of_referrer != Pubkey::default() {
-                player_state.tier2_referrer = referrer_of_referrer;
+        // Validate discriminator matches PlayerState before reading fields
+        let discriminator = &data[..8];
+        let expected_disc = <PlayerState as anchor_lang::Discriminator>::DISCRIMINATOR;
+        if discriminator == expected_disc && data.len() >= std::mem::size_of::<PlayerState>() + 8 {
+            // Deserialize using AnchorDeserialize (field-aware, not offset-dependent)
+            if let Ok(ps) = PlayerState::try_from_slice(&data[8..]) {
+                if ps.referrer != Pubkey::default() {
+                    player_state.tier2_referrer = ps.referrer;
+                }
             }
         }
+        // If deserialization fails, tier2_referrer stays default — same as before
     }
 
     // Initialize referral state if first time
