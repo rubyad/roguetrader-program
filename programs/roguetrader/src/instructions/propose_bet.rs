@@ -148,7 +148,7 @@ pub fn handler<'info>(
     let mut total_free: u64 = 0;
     let mut cp_frees: [u64; 29] = [0u64; 29];
     let mut cp_caps: [u64; 29] = [0u64; 29];
-    let mut seen_bot_ids: [bool; 30] = [false; 30];
+    let mut seen_bot_ids: [bool; 31] = [false; 31];
 
     for (i, acct) in ctx.remaining_accounts.iter().enumerate() {
         let cp_vault = Account::<AgentVault>::try_from(acct)?;
@@ -165,7 +165,7 @@ pub fn handler<'info>(
 
         // No duplicate bot_ids
         let bid = cp_vault.bot_id as usize;
-        require!(bid < 30, RogueTraderError::InvalidCounterpartyVault);
+        require!(bid <= 30, RogueTraderError::InvalidCounterpartyVault);
         require!(!seen_bot_ids[bid], RogueTraderError::DuplicateCounterparty);
         seen_bot_ids[bid] = true;
 

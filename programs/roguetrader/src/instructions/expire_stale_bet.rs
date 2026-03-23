@@ -63,7 +63,7 @@ pub fn handler<'info>(
     let proposer_stake = bet.proposer_stake;
 
     // M-4: Validate counterparty vaults — PDA check, uniqueness, completeness
-    let mut seen_bot_ids: [bool; 30] = [false; 30];
+    let mut seen_bot_ids: [bool; 31] = [false; 31];
     for acct in ctx.remaining_accounts.iter() {
         let cp_vault_check = Account::<AgentVault>::try_from(acct)?;
         let (expected_pda, _) = Pubkey::find_program_address(
@@ -72,7 +72,7 @@ pub fn handler<'info>(
         );
         require!(acct.key() == expected_pda, RogueTraderError::InvalidCounterpartyVault);
         let bid = cp_vault_check.bot_id as usize;
-        require!(bid < 30, RogueTraderError::InvalidCounterpartyVault);
+        require!(bid <= 30, RogueTraderError::InvalidCounterpartyVault);
         require!(!seen_bot_ids[bid], RogueTraderError::DuplicateCounterparty);
         seen_bot_ids[bid] = true;
     }
