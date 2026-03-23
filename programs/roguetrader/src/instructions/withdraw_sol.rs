@@ -180,9 +180,13 @@ pub fn handler(ctx: Context<WithdrawSol>, lp_amount: u64) -> Result<()> {
 
     if player_referrer != Pubkey::default() {
         distribute_fee(&ctx.accounts.vault, &ctx.accounts.referrer, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps);
+    } else {
+        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps);
     }
     if player_tier2 != Pubkey::default() {
         distribute_fee(&ctx.accounts.vault, &ctx.accounts.tier2_referrer, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps);
+    } else {
+        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps);
     }
     distribute_fee(&ctx.accounts.vault, &ctx.accounts.bonus_wallet, &sys_info, vault_seeds, distribute_amount, bonus_bps, wallet_fee_bps);
     distribute_fee(&ctx.accounts.vault, &ctx.accounts.nft_rewarder, &sys_info, vault_seeds, distribute_amount, nft_bps, wallet_fee_bps);
