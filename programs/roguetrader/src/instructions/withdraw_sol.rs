@@ -58,17 +58,23 @@ pub struct WithdrawSol<'info> {
     #[account(mut)]
     pub withdrawer: Signer<'info>,
 
-    /// CHECK: Tier-1 referrer wallet — validated against PlayerState
+    /// CHECK: Tier-1 referrer wallet — validated against PlayerState.
+    /// When no referrer is set (default), accepts platform_wallet as writable substitute.
     #[account(
         mut,
-        constraint = referrer.key() == player_state.referrer @ RogueTraderError::InvalidFeeWallet
+        constraint = referrer.key() == player_state.referrer
+            || (player_state.referrer == Pubkey::default() && referrer.key() == clearing_house.platform_wallet)
+            @ RogueTraderError::InvalidFeeWallet
     )]
     pub referrer: AccountInfo<'info>,
 
-    /// CHECK: Tier-2 referrer wallet — validated against PlayerState
+    /// CHECK: Tier-2 referrer wallet — validated against PlayerState.
+    /// When no tier-2 referrer is set (default), accepts platform_wallet as writable substitute.
     #[account(
         mut,
-        constraint = tier2_referrer.key() == player_state.tier2_referrer @ RogueTraderError::InvalidFeeWallet
+        constraint = tier2_referrer.key() == player_state.tier2_referrer
+            || (player_state.tier2_referrer == Pubkey::default() && tier2_referrer.key() == clearing_house.platform_wallet)
+            @ RogueTraderError::InvalidFeeWallet
     )]
     pub tier2_referrer: AccountInfo<'info>,
 

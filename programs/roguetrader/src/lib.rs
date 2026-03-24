@@ -1,6 +1,10 @@
 use anchor_lang::prelude::*;
 
+#[cfg(not(feature = "devnet"))]
 declare_id!("EDSh6vJ7KDsB6UStKYt4mDBcAJqVtS7JWoPbDXw81LSr");
+
+#[cfg(feature = "devnet")]
+declare_id!("EDb1DSJZZuRrwnaFbo3oRStNemcbpZd2VxdYjvMP3fJt");
 
 #[cfg(not(feature = "no-entrypoint"))]
 use solana_security_txt::security_txt;
