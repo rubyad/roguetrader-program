@@ -10,7 +10,7 @@ pub struct AdminSetReferrer<'info> {
         seeds = [b"clearing_house"],
         bump = clearing_house.bump,
     )]
-    pub clearing_house: Account<'info, ClearingHouseState>,
+    pub clearing_house: Box<Account<'info, ClearingHouseState>>,
 
     /// Player's state — init_if_needed (settler pays rent)
     #[account(
@@ -20,7 +20,7 @@ pub struct AdminSetReferrer<'info> {
         seeds = [b"player_state", player_key.as_ref()],
         bump,
     )]
-    pub player_state: Account<'info, PlayerState>,
+    pub player_state: Box<Account<'info, PlayerState>>,
 
     /// Referrer's referral state — init_if_needed (settler pays rent)
     #[account(
@@ -30,7 +30,7 @@ pub struct AdminSetReferrer<'info> {
         seeds = [b"referral_state", referrer_key.as_ref()],
         bump,
     )]
-    pub referral_state: Account<'info, ReferralState>,
+    pub referral_state: Box<Account<'info, ReferralState>>,
 
     /// Referrer's player state (for tier-2 resolution)
     /// CHECK: May not exist
