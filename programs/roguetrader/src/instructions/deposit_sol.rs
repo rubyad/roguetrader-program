@@ -35,7 +35,7 @@ pub struct DepositSol<'info> {
         mut,
         address = agent_vault.lp_mint,
     )]
-    pub lp_mint: Account<'info, Mint>,
+    pub lp_mint: Box<Account<'info, Mint>>,
 
     /// LP authority PDA — signs mint operations
     /// CHECK: PDA validated by seeds
@@ -51,17 +51,17 @@ pub struct DepositSol<'info> {
         token::mint = lp_mint,
         token::authority = depositor,
     )]
-    pub user_lp_account: Account<'info, TokenAccount>,
+    pub user_lp_account: Box<Account<'info, TokenAccount>>,
 
     /// Player state for referral tracking (auto-created on first deposit)
     #[account(
         init_if_needed,
         payer = depositor,
-        space = 8 + 193,
+        space = 8 + std::mem::size_of::<PlayerState>(),
         seeds = [b"player_state", depositor.key().as_ref()],
         bump,
     )]
-    pub player_state: Account<'info, PlayerState>,
+    pub player_state: Box<Account<'info, PlayerState>>,
 
     #[account(mut)]
     pub depositor: Signer<'info>,
@@ -107,12 +107,23 @@ pub struct DepositSol<'info> {
     )]
     pub platform_wallet: AccountInfo<'info>,
 
+    /// CHECK: Tier-1 referrer's ReferralState PDA — for updating total_earnings.
+    /// When referrer is set, pass the PDA at [b"referral_state", referrer_wallet].
+    /// When no referrer, pass any writable account (handler validates PDA before writing).
+    #[account(mut)]
+    pub referral_state: AccountInfo<'info>,
+
+    /// CHECK: Tier-2 referrer's ReferralState PDA — same pattern.
+    #[account(mut)]
+    pub tier2_referral_state: AccountInfo<'info>,
+
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
 }
 
 /// Best-effort SOL transfer from vault PDA to recipient.
-/// Emits FeeTransferFailed event on failure — fee stays in vault (benefits LP holders).
+/// Returns the actual lamports transferred (0 on failure or skip).
+/// Emits FeeTransferFailed on CPI failure — fee stays in vault (benefits LP holders).
 pub fn distribute_fee<'info>(
     vault: &AccountInfo<'info>,
     recipient: &AccountInfo<'info>,
@@ -121,13 +132,13 @@ pub fn distribute_fee<'info>(
     fee: u64,
     share_bps: u16,
     total_bps: u16,
-) {
+) -> u64 {
     if share_bps == 0 || *recipient.key == Pubkey::default() || fee == 0 || total_bps == 0 {
-        return;
+        return 0;
     }
     let share = (fee as u128 * share_bps as u128 / total_bps as u128) as u64;
     if share == 0 {
-        return;
+        return 0;
     }
     match anchor_lang::solana_program::program::invoke_signed(
         &anchor_lang::solana_program::system_instruction::transfer(
@@ -136,14 +147,50 @@ pub fn distribute_fee<'info>(
         &[vault.clone(), recipient.clone(), system_program.clone()],
         &[vault_seeds],
     ) {
-        Ok(()) => {}
+        Ok(()) => share,
         Err(_) => {
             emit!(FeeTransferFailed {
                 recipient: *recipient.key,
                 amount: share,
                 timestamp: Clock::get().map(|c| c.unix_timestamp).unwrap_or(0),
             });
+            0
         }
+    }
+}
+
+/// Best-effort update of ReferralState.total_earnings.
+/// Validates PDA, owner, and discriminator before writing.
+/// Silently skips if account doesn't match (no error, no revert).
+pub fn update_referral_earnings(
+    account: &AccountInfo,
+    referrer_key: &Pubkey,
+    program_id: &Pubkey,
+    amount: u64,
+) {
+    // Validate PDA derivation
+    let (expected_pda, _) = Pubkey::find_program_address(
+        &[b"referral_state", referrer_key.as_ref()],
+        program_id,
+    );
+    if account.key != &expected_pda {
+        return;
+    }
+    // Validate owner
+    if account.owner != program_id {
+        return;
+    }
+    // Validate data length (8 discriminator + ReferralState fields)
+    let data_len = account.data_len();
+    if data_len < 8 + 32 + 8 + 8 + 1 {
+        return;
+    }
+    // Update total_earnings in-place (offset: 8 disc + 32 referrer = 40)
+    if let Ok(mut data) = account.try_borrow_mut_data() {
+        let offset = 8 + 32; // discriminator + referrer Pubkey
+        let current = u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap_or([0; 8]));
+        let new_val = current.saturating_add(amount);
+        data[offset..offset + 8].copy_from_slice(&new_val.to_le_bytes());
     }
 }
 
@@ -195,6 +242,7 @@ pub fn handler(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
     )?;
 
     // Distribute wallet portion of fee (best-effort)
+    msg!("fee_accounting: starting fee distribution");
     let wallet_fee_bps = deposit_fee_bps.saturating_sub(spread_to_lp_bps);
     let vault_seeds: &[&[u8]] = &[b"vault", &[vault_bump]];
     let sys_info = ctx.accounts.system_program.to_account_info();
@@ -202,19 +250,29 @@ pub fn handler(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
     let player_referrer = ctx.accounts.player_state.referrer;
     let player_tier2 = ctx.accounts.player_state.tier2_referrer;
 
-    if player_referrer != Pubkey::default() {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.referrer, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps);
+    msg!("fee_accounting: about to distribute fees");
+    // Distribute fees and track actual amounts paid (0 if transfer failed)
+    let ref_paid = if player_referrer != Pubkey::default() {
+        distribute_fee(&ctx.accounts.vault, &ctx.accounts.referrer, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps)
     } else {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps);
-    }
-    if player_tier2 != Pubkey::default() {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.tier2_referrer, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps);
+        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps)
+    };
+    let t2_paid = if player_tier2 != Pubkey::default() {
+        distribute_fee(&ctx.accounts.vault, &ctx.accounts.tier2_referrer, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps)
     } else {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps);
+        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps)
+    };
+    let bonus_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.bonus_wallet, &sys_info, vault_seeds, distribute_amount, bonus_bps, wallet_fee_bps);
+    let nft_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.nft_rewarder, &sys_info, vault_seeds, distribute_amount, nft_bps, wallet_fee_bps);
+    let plat_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, platform_bps, wallet_fee_bps);
+
+    // Update per-referrer on-chain earnings (manual PDA validation + deserialization)
+    if ref_paid > 0 && player_referrer != Pubkey::default() {
+        update_referral_earnings(&ctx.accounts.referral_state, &player_referrer, ctx.program_id, ref_paid);
     }
-    distribute_fee(&ctx.accounts.vault, &ctx.accounts.bonus_wallet, &sys_info, vault_seeds, distribute_amount, bonus_bps, wallet_fee_bps);
-    distribute_fee(&ctx.accounts.vault, &ctx.accounts.nft_rewarder, &sys_info, vault_seeds, distribute_amount, nft_bps, wallet_fee_bps);
-    distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, platform_bps, wallet_fee_bps);
+    if t2_paid > 0 && player_tier2 != Pubkey::default() {
+        update_referral_earnings(&ctx.accounts.tier2_referral_state, &player_tier2, ctx.program_id, t2_paid);
+    }
 
     // Calculate LP tokens to mint using FULL sol_balance (not effective).
     // This assumes all active bets will win, giving depositors the highest
@@ -272,9 +330,18 @@ pub fn handler(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
     player.total_deposited = player.total_deposited.checked_add(amount).ok_or(RogueTraderError::MathOverflow)?;
     player.deposit_count += 1;
 
-    // Update clearing house fees — track total spread (LP + wallet portions)
+    // Update clearing house fees — track total spread + per-category breakdown
+    // Only count fees as "referral" when they actually went to a referrer (not platform fallback)
+    let actual_ref = if player_referrer != Pubkey::default() { ref_paid } else { 0 };
+    let actual_t2 = if player_tier2 != Pubkey::default() { t2_paid } else { 0 };
+    let fallback_plat = ref_paid - actual_ref + t2_paid - actual_t2;
+
     let ch = &mut ctx.accounts.clearing_house;
     ch.total_deposit_fees = ch.total_deposit_fees.checked_add(total_spread).ok_or(RogueTraderError::MathOverflow)?;
+    ch.total_referral_paid = ch.total_referral_paid.saturating_add(actual_ref).saturating_add(actual_t2);
+    ch.total_bonus_paid = ch.total_bonus_paid.saturating_add(bonus_paid);
+    ch.total_nft_rewards_paid = ch.total_nft_rewards_paid.saturating_add(nft_paid);
+    ch.total_platform_fees_paid = ch.total_platform_fees_paid.saturating_add(plat_paid).saturating_add(fallback_plat);
 
     let clock = Clock::get()?;
     emit!(DepositCompleted {
