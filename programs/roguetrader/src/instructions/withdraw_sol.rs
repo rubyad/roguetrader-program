@@ -49,7 +49,7 @@ pub struct WithdrawSol<'info> {
     #[account(
         init_if_needed,
         payer = withdrawer,
-        space = 8 + std::mem::size_of::<PlayerState>(),
+        space = 8 + 193,
         seeds = [b"player_state", withdrawer.key().as_ref()],
         bump,
     )]

@@ -16,7 +16,7 @@ pub struct AdminSetReferrer<'info> {
     #[account(
         init_if_needed,
         payer = settler,
-        space = 8 + std::mem::size_of::<PlayerState>(),
+        space = 8 + 193,
         seeds = [b"player_state", player_key.as_ref()],
         bump,
     )]
@@ -26,7 +26,7 @@ pub struct AdminSetReferrer<'info> {
     #[account(
         init_if_needed,
         payer = settler,
-        space = 8 + std::mem::size_of::<ReferralState>(),
+        space = 8 + 113,
         seeds = [b"referral_state", referrer_key.as_ref()],
         bump,
     )]
@@ -81,7 +81,7 @@ pub fn handler(
         // Validate discriminator matches PlayerState before reading fields
         let discriminator = &data[..8];
         let expected_disc = <PlayerState as anchor_lang::Discriminator>::DISCRIMINATOR;
-        if discriminator == expected_disc && data.len() >= std::mem::size_of::<PlayerState>() + 8 {
+        if discriminator == expected_disc && data.len() >= 193 + 8 {
             // Deserialize using AnchorDeserialize (field-aware, not offset-dependent)
             if let Ok(ps) = PlayerState::try_from_slice(&data[8..]) {
                 if ps.referrer != Pubkey::default() {

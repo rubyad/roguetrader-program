@@ -57,7 +57,7 @@ pub struct DepositSol<'info> {
     #[account(
         init_if_needed,
         payer = depositor,
-        space = 8 + std::mem::size_of::<PlayerState>(),
+        space = 8 + 193,
         seeds = [b"player_state", depositor.key().as_ref()],
         bump,
     )]
