@@ -111,6 +111,9 @@ pub mod roguetrader {
         spread_to_lp_bps: Option<u16>,
         max_cp_exposure_bps: Option<u16>,
         stale_bet_buffer_secs: Option<i64>,
+        rewards_tax_bps: Option<u16>,
+        raffle_interval_secs: Option<i64>,
+        raffle_paused: Option<bool>,
     ) -> Result<()> {
         instructions::update_config::handler(
             ctx,
@@ -133,6 +136,9 @@ pub mod roguetrader {
             spread_to_lp_bps,
             max_cp_exposure_bps,
             stale_bet_buffer_secs,
+            rewards_tax_bps,
+            raffle_interval_secs,
+            raffle_paused,
         )
     }
 
@@ -240,14 +246,17 @@ pub mod roguetrader {
         instructions::update_lp_metadata::handler(ctx, bot_id, name, symbol, uri)
     }
 
-    /// Authority resets a vault's active_bet_count, locked_sol, and counterparty_locked_sol (safety valve)
+    /// Authority resets a vault's counters, sol_balance, and LP mint reference (safety valve)
     pub fn admin_reset_vault(
         ctx: Context<AdminResetVault>,
         active_bet_count: u8,
         locked_sol: u64,
         counterparty_locked_sol: u64,
+        sol_balance: Option<u64>,
+        lp_mint: Option<Pubkey>,
+        lp_mint_bump: Option<u8>,
     ) -> Result<()> {
-        instructions::admin_reset_vault::handler(ctx, active_bet_count, locked_sol, counterparty_locked_sol)
+        instructions::admin_reset_vault::handler(ctx, active_bet_count, locked_sol, counterparty_locked_sol, sol_balance, lp_mint, lp_mint_bump)
     }
 
     /// L-4: Current authority proposes a new authority (step 1 of 2)
@@ -258,5 +267,12 @@ pub mod roguetrader {
     /// L-4: New authority accepts the transfer (step 2 of 2)
     pub fn accept_authority_transfer(ctx: Context<AcceptAuthorityTransfer>) -> Result<()> {
         instructions::transfer_authority::accept_handler(ctx)
+    }
+
+    /// Draw raffle — inverse-AUM weighted random selection from rewards pool
+    pub fn draw_raffle<'info>(
+        ctx: Context<'_, '_, 'info, 'info, DrawRaffle<'info>>,
+    ) -> Result<()> {
+        instructions::draw_raffle::handler(ctx)
     }
 }

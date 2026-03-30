@@ -17,6 +17,7 @@ pub mod admin_reset_vault;
 pub mod create_lp_metadata;
 pub mod update_lp_metadata;
 pub mod transfer_authority;
+pub mod draw_raffle;
 
 pub use initialize::*;
 pub use create_agent_vault::*;
@@ -37,3 +38,4 @@ pub use admin_reset_vault::*;
 pub use create_lp_metadata::*;
 pub use update_lp_metadata::*;
 pub use transfer_authority::*;
+pub use draw_raffle::*;

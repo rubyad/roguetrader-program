@@ -138,4 +138,15 @@ pub enum RogueTraderError {
 
     #[msg("No pending authority transfer")]
     NoPendingTransfer,                      // 6044
+
+    // === Rewards Pool / Raffle ===
+
+    #[msg("Raffle is paused")]
+    RafflePaused,                           // 6045
+
+    #[msg("Rewards pool is empty")]
+    EmptyRewardsPool,                       // 6046
+
+    #[msg("Raffle interval has not elapsed")]
+    RaffleTooEarly,                         // 6047
 }

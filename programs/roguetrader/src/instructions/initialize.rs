@@ -134,8 +134,19 @@ pub fn handler(
     // L-4: No pending authority transfer
     clearing_house.pending_authority = Pubkey::default();
 
+    // Rewards pool + raffle (all zeroed by default — no tax, no raffle until configured)
+    clearing_house.rewards_pool_balance = 0;
+    clearing_house.rewards_tax_bps = 0;
+    clearing_house.last_raffle_timestamp = 0;
+    clearing_house.raffle_interval_secs = 0;
+    clearing_house.total_raffles_drawn = 0;
+    clearing_house.total_rewards_distributed = 0;
+    clearing_house.last_winner_bot_id = 0;
+    clearing_house.last_winner_amount = 0;
+    clearing_house.raffle_paused = false;
+
     // Reserved
-    clearing_house._reserved = [0u8; 74];
+    clearing_house._reserved = [0u8; 22];
 
     let clock = Clock::get()?;
     emit!(ClearingHouseInitialized {

@@ -38,6 +38,9 @@ pub fn handler(
     spread_to_lp_bps: Option<u16>,
     max_cp_exposure_bps: Option<u16>,
     stale_bet_buffer_secs: Option<i64>,
+    rewards_tax_bps: Option<u16>,
+    raffle_interval_secs: Option<i64>,
+    raffle_paused: Option<bool>,
 ) -> Result<()> {
     let ch = &mut ctx.accounts.clearing_house;
     let clock = Clock::get()?;
@@ -148,6 +151,24 @@ pub fn handler(
         let old = ch.stale_bet_buffer_secs;
         ch.stale_bet_buffer_secs = v;
         emit!(ConfigUpdated { field_id: 18, old_value: old as u64, new_value: v as u64, authority: auth, timestamp: ts });
+    }
+
+    if let Some(v) = rewards_tax_bps {
+        require!(v <= 5000, RogueTraderError::InvalidConfig);
+        let old = ch.rewards_tax_bps;
+        ch.rewards_tax_bps = v;
+        emit!(ConfigUpdated { field_id: 19, old_value: old as u64, new_value: v as u64, authority: auth, timestamp: ts });
+    }
+    if let Some(v) = raffle_interval_secs {
+        require!(v >= 60, RogueTraderError::InvalidConfig);
+        let old = ch.raffle_interval_secs;
+        ch.raffle_interval_secs = v;
+        emit!(ConfigUpdated { field_id: 20, old_value: old as u64, new_value: v as u64, authority: auth, timestamp: ts });
+    }
+    if let Some(v) = raffle_paused {
+        let old = ch.raffle_paused;
+        ch.raffle_paused = v;
+        emit!(ConfigUpdated { field_id: 21, old_value: old as u64, new_value: v as u64, authority: auth, timestamp: ts });
     }
 
     // Validate fee split: wallet splits must sum to deposit_fee_bps minus spread_to_lp_bps

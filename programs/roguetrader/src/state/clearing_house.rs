@@ -72,6 +72,17 @@ pub struct ClearingHouseState {
     // L-4: Two-step authority transfer
     pub pending_authority: Pubkey,    // 32 — Pubkey::default() = no pending transfer
 
-    pub _reserved: [u8; 74],          // 74 (was 110, used 36 for new fields: 3 pause flags + 32 pending_authority + 1 byte consumed by serialization alignment)
+    // Rewards pool + raffle system
+    pub rewards_pool_balance: u64,    // 8 — accumulated tax from winning bets
+    pub rewards_tax_bps: u16,         // 2 — default 0, max 5000 (50%). 1000 = 10%
+    pub last_raffle_timestamp: i64,   // 8 — unix timestamp of last draw
+    pub raffle_interval_secs: i64,    // 8 — default 0 (disabled), min 60 when set
+    pub total_raffles_drawn: u64,     // 8 — nonce for provable fairness seed
+    pub total_rewards_distributed: u64, // 8 — lifetime total payouts
+    pub last_winner_bot_id: u8,       // 1 — for display
+    pub last_winner_amount: u64,      // 8 — lamports, for display
+    pub raffle_paused: bool,          // 1 — granular pause
+
+    pub _reserved: [u8; 22],          // 22 (was 74, used 52 for rewards/raffle fields)
 }
 // Total: ~585 bytes (unchanged — consumed from _reserved)

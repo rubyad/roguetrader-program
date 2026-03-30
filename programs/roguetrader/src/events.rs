@@ -130,6 +130,7 @@ pub struct BetSettled {
     pub exit_price: i64,
     pub proposer_stake: u64,
     pub counterparty_pool: u64,
+    pub tax_amount: u64,
     pub timestamp: i64,
 }
 
@@ -176,6 +177,17 @@ pub struct AuthorityTransferred {
     pub old_authority: Pubkey,
     pub new_authority: Pubkey,
     pub timestamp: i64,
+}
+
+/// Emitted when a raffle is drawn
+#[event]
+pub struct RaffleDrawn {
+    pub raffle_number: u64,
+    pub winner_bot_id: u8,
+    pub reward_amount: u64,
+    pub slot: u64,
+    pub timestamp: i64,
+    pub total_weight: u64,
 }
 
 /// L-6: Emitted when granular pause state changes

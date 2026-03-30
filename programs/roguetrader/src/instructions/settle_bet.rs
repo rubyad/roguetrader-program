@@ -124,6 +124,9 @@ pub fn handler<'info>(
         }
     };
 
+    // Read tax rate for rewards pool
+    let tax_bps = ctx.accounts.clearing_house.rewards_tax_bps as u64;
+
     // M-4: Validate counterparty vaults — PDA check, uniqueness, completeness
     let mut seen_bot_ids: [bool; 31] = [false; 31];
     for acct in ctx.remaining_accounts.iter() {
@@ -173,14 +176,19 @@ pub fn handler<'info>(
 
         match outcome {
             OUTCOME_PROPOSER_WON => {
-                // Counterparty loses: sol_balance -= cp_stake
+                // Counterparty loses: sol_balance -= cp_stake (full loss, unchanged)
                 cp_vault.sol_balance = cp_vault.sol_balance.saturating_sub(cp_stake);
             }
             OUTCOME_PROPOSER_LOST => {
-                // Counterparty wins proportionally: gains (cp_stake / cp_pool) × proposer_stake
+                // Counterparty wins proportionally: gains (cp_stake / cp_pool) × taxed_proposer_stake
+                // Tax is deducted from total winnings before distribution
                 if cp_pool > 0 {
+                    let cp_tax = if tax_bps > 0 {
+                        (proposer_stake as u128).checked_mul(tax_bps as u128).unwrap() / 10_000u128
+                    } else { 0u128 };
+                    let taxed_stake = (proposer_stake as u128).checked_sub(cp_tax).unwrap();
                     let gain = (cp_stake as u128)
-                        .checked_mul(proposer_stake as u128)
+                        .checked_mul(taxed_stake)
                         .unwrap()
                         / (cp_pool as u128);
                     cp_vault.sol_balance = cp_vault
@@ -203,16 +211,34 @@ pub fn handler<'info>(
     proposer.locked_sol = proposer.locked_sol.saturating_sub(proposer_stake);
     proposer.active_bet_count = proposer.active_bet_count.saturating_sub(1);
 
+    // Compute tax amounts based on outcome
+    let tax_amount: u64 = match outcome {
+        OUTCOME_PROPOSER_WON => {
+            if tax_bps > 0 {
+                ((cp_pool as u128).checked_mul(tax_bps as u128).unwrap() / 10_000u128) as u64
+            } else { 0 }
+        }
+        OUTCOME_PROPOSER_LOST => {
+            if tax_bps > 0 {
+                ((proposer_stake as u128).checked_mul(tax_bps as u128).unwrap() / 10_000u128) as u64
+            } else { 0 }
+        }
+        _ => 0,
+    };
+
     match outcome {
         OUTCOME_PROPOSER_WON => {
+            // Proposer gains cp_pool minus tax
+            let net_gain = cp_pool.checked_sub(tax_amount).ok_or(RogueTraderError::MathOverflow)?;
             proposer.sol_balance = proposer
                 .sol_balance
-                .checked_add(cp_pool)
+                .checked_add(net_gain)
                 .ok_or(RogueTraderError::MathOverflow)?;
             proposer.bets_won += 1;
             proposer.update_win_rate(true, ctx.accounts.clearing_house.odds_window_size);
         }
         OUTCOME_PROPOSER_LOST => {
+            // Proposer loses full stake (unchanged)
             proposer.sol_balance = proposer.sol_balance.saturating_sub(proposer_stake);
             proposer.bets_lost += 1;
             proposer.update_win_rate(false, ctx.accounts.clearing_house.odds_window_size);
@@ -239,6 +265,13 @@ pub fn handler<'info>(
         .checked_add(1)
         .ok_or(RogueTraderError::MathOverflow)?;
 
+    // Accumulate tax into rewards pool
+    if tax_amount > 0 {
+        ch.rewards_pool_balance = ch.rewards_pool_balance
+            .checked_add(tax_amount)
+            .ok_or(RogueTraderError::MathOverflow)?;
+    }
+
     emit!(BetSettled {
         bet_id,
         proposer_bot: proposer.bot_id,
@@ -247,6 +280,7 @@ pub fn handler<'info>(
         exit_price,
         proposer_stake,
         counterparty_pool: cp_pool,
+        tax_amount,
         timestamp: clock.unix_timestamp,
     });
 
