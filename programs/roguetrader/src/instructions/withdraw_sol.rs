@@ -3,7 +3,7 @@ use anchor_spl::token::{self, Burn, Mint, Token, TokenAccount};
 use crate::state::{AgentVault, ClearingHouseState, PlayerState};
 use crate::errors::RogueTraderError;
 use crate::events::WithdrawCompleted;
-use crate::instructions::deposit_sol::{distribute_fee, update_referral_earnings};
+use crate::instructions::deposit_sol::{distribute_fee_with_fallback, update_referral_earnings};
 
 #[derive(Accounts)]
 pub struct WithdrawSol<'info> {
@@ -194,26 +194,59 @@ pub fn handler(ctx: Context<WithdrawSol>, lp_amount: u64) -> Result<()> {
     let player_referrer = ctx.accounts.player_state.referrer;
     let player_tier2 = ctx.accounts.player_state.tier2_referrer;
 
-    // Distribute fees and track actual amounts paid (0 if transfer failed)
-    let ref_paid = if player_referrer != Pubkey::default() {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.referrer, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps)
-    } else {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps)
-    };
-    let t2_paid = if player_tier2 != Pubkey::default() {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.tier2_referrer, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps)
-    } else {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps)
-    };
-    let bonus_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.bonus_wallet, &sys_info, vault_seeds, distribute_amount, bonus_bps, wallet_fee_bps);
-    let nft_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.nft_rewarder, &sys_info, vault_seeds, distribute_amount, nft_bps, wallet_fee_bps);
-    let plat_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, platform_bps, wallet_fee_bps);
+    // Distribute fees and track actual amounts paid (0 if transfer failed) plus whether
+    // the share was redirected to platform due to the rent-safety fallback.
+    let platform_info = ctx.accounts.platform_wallet.to_account_info();
 
-    // Update per-referrer on-chain earnings (manual PDA validation + deserialization)
-    if ref_paid > 0 && player_referrer != Pubkey::default() {
+    let (ref_paid, ref_redirected) = if player_referrer != Pubkey::default() {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.referrer,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps,
+        )
+    } else {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.platform_wallet,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps,
+        )
+    };
+    let (t2_paid, t2_redirected) = if player_tier2 != Pubkey::default() {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.tier2_referrer,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps,
+        )
+    } else {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.platform_wallet,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps,
+        )
+    };
+    let (bonus_paid, _) = distribute_fee_with_fallback(
+        &ctx.accounts.vault, &ctx.accounts.bonus_wallet, &platform_info,
+        &sys_info, vault_seeds, distribute_amount, bonus_bps, wallet_fee_bps,
+    );
+    let (nft_paid, _) = distribute_fee_with_fallback(
+        &ctx.accounts.vault, &ctx.accounts.nft_rewarder, &platform_info,
+        &sys_info, vault_seeds, distribute_amount, nft_bps, wallet_fee_bps,
+    );
+    let (plat_paid, _) = distribute_fee_with_fallback(
+        &ctx.accounts.vault, &ctx.accounts.platform_wallet, &platform_info,
+        &sys_info, vault_seeds, distribute_amount, platform_bps, wallet_fee_bps,
+    );
+
+    // Update per-referrer on-chain earnings (manual PDA validation + deserialization).
+    // Skip when the share was redirected to platform — the referrer did not actually earn it.
+    if ref_paid > 0 && player_referrer != Pubkey::default() && !ref_redirected {
         update_referral_earnings(&ctx.accounts.referral_state, &player_referrer, ctx.program_id, ref_paid);
     }
-    if t2_paid > 0 && player_tier2 != Pubkey::default() {
+    if t2_paid > 0 && player_tier2 != Pubkey::default() && !t2_redirected {
         update_referral_earnings(&ctx.accounts.tier2_referral_state, &player_tier2, ctx.program_id, t2_paid);
     }
 
@@ -235,11 +268,14 @@ pub fn handler(ctx: Context<WithdrawSol>, lp_amount: u64) -> Result<()> {
     player.total_withdrawn = player.total_withdrawn.checked_add(gross_sol).ok_or(RogueTraderError::MathOverflow)?;
     player.withdrawal_count += 1;
 
-    // Update clearing house fees — track total spread + per-category breakdown
-    // Only count fees as "referral" when they actually went to a referrer (not platform fallback)
-    let actual_ref = if player_referrer != Pubkey::default() { ref_paid } else { 0 };
-    let actual_t2 = if player_tier2 != Pubkey::default() { t2_paid } else { 0 };
-    let fallback_plat = ref_paid - actual_ref + t2_paid - actual_t2;
+    // Update clearing house fees — track total spread + per-category breakdown.
+    // Only count fees as "referral" when they actually went to a referrer:
+    //   - referrer was set (not default), AND
+    //   - the share was NOT redirected to platform by the rent-safety fallback.
+    // Anything that was supposed to go to a referrer but didn't, lands in platform totals.
+    let actual_ref = if player_referrer != Pubkey::default() && !ref_redirected { ref_paid } else { 0 };
+    let actual_t2 = if player_tier2 != Pubkey::default() && !t2_redirected { t2_paid } else { 0 };
+    let fallback_plat = (ref_paid - actual_ref) + (t2_paid - actual_t2);
 
     let ch = &mut ctx.accounts.clearing_house;
     ch.total_withdrawal_fees = ch.total_withdrawal_fees.checked_add(total_spread).ok_or(RogueTraderError::MathOverflow)?;

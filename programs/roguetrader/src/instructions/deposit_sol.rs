@@ -121,40 +121,79 @@ pub struct DepositSol<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-/// Best-effort SOL transfer from vault PDA to recipient.
-/// Returns the actual lamports transferred (0 on failure or skip).
-/// Emits FeeTransferFailed on CPI failure — fee stays in vault (benefits LP holders).
-pub fn distribute_fee<'info>(
+/// Best-effort SOL transfer from vault PDA to recipient, with a rent-safety fallback.
+///
+/// Returns `(paid_amount, redirected_to_fallback)`:
+/// - `paid_amount`: actual lamports transferred (0 on failure or skip).
+/// - `redirected_to_fallback`: true iff the share was routed to `fallback` instead of
+///   `recipient` because sending to `recipient` would have created a rent-paying account
+///   (Uninitialized → RentPaying, forbidden by SIMD-0058).
+///
+/// The redirect only triggers when `recipient_pre == 0` AND `recipient_pre + share <
+/// rent_exempt_min`. Transitions of the form `RentPaying → RentPaying` are allowed by the
+/// runtime, so partially-funded wallets still receive shares normally.
+///
+/// Emits `FeeTransferFailed` on CPI failure — fee stays in vault (benefits LP holders).
+pub fn distribute_fee_with_fallback<'info>(
     vault: &AccountInfo<'info>,
     recipient: &AccountInfo<'info>,
+    fallback: &AccountInfo<'info>,
     system_program: &AccountInfo<'info>,
     vault_seeds: &[&[u8]],
     fee: u64,
     share_bps: u16,
     total_bps: u16,
-) -> u64 {
+) -> (u64, bool) {
     if share_bps == 0 || *recipient.key == Pubkey::default() || fee == 0 || total_bps == 0 {
-        return 0;
+        return (0, false);
     }
     let share = (fee as u128 * share_bps as u128 / total_bps as u128) as u64;
     if share == 0 {
-        return 0;
+        return (0, false);
     }
+
+    // Decide target: recipient if it stays valid, else fallback.
+    let recipient_is_self = recipient.key() == fallback.key();
+    let target = if recipient_is_self {
+        // Already pointing at the fallback (e.g., no-referrer case) — no redirect possible.
+        recipient
+    } else {
+        // Rent-exempt minimum for a 0-byte system account. `Rent::get()` only fails if the
+        // sysvar isn't loaded, which shouldn't happen mid-instruction; 890_880 is the
+        // documented constant for an empty system account at current protocol parameters.
+        let rent_exempt_min: u64 = Rent::get()
+            .map(|r| r.minimum_balance(0))
+            .unwrap_or(890_880);
+        let recipient_pre = recipient.lamports();
+        let recipient_post = recipient_pre.saturating_add(share);
+        let pre_was_uninit = recipient_pre == 0;
+        let post_would_be_rent_paying = recipient_post < rent_exempt_min;
+        if pre_was_uninit && post_would_be_rent_paying {
+            // Forbidden Uninitialized → RentPaying transition — route to fallback instead
+            // so the whole TX doesn't fail with InsufficientFundsForRent (SIMD-0058).
+            fallback
+        } else {
+            recipient
+        }
+    };
+
+    let was_redirected = target.key() != recipient.key();
+
     match anchor_lang::solana_program::program::invoke_signed(
         &anchor_lang::solana_program::system_instruction::transfer(
-            vault.key, recipient.key, share,
+            vault.key, target.key, share,
         ),
-        &[vault.clone(), recipient.clone(), system_program.clone()],
+        &[vault.clone(), target.clone(), system_program.clone()],
         &[vault_seeds],
     ) {
-        Ok(()) => share,
+        Ok(()) => (share, was_redirected),
         Err(_) => {
             emit!(FeeTransferFailed {
-                recipient: *recipient.key,
+                recipient: *target.key,
                 amount: share,
                 timestamp: Clock::get().map(|c| c.unix_timestamp).unwrap_or(0),
             });
-            0
+            (0, false)
         }
     }
 }
@@ -251,26 +290,59 @@ pub fn handler(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
     let player_tier2 = ctx.accounts.player_state.tier2_referrer;
 
     msg!("fee_accounting: about to distribute fees");
-    // Distribute fees and track actual amounts paid (0 if transfer failed)
-    let ref_paid = if player_referrer != Pubkey::default() {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.referrer, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps)
-    } else {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps)
-    };
-    let t2_paid = if player_tier2 != Pubkey::default() {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.tier2_referrer, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps)
-    } else {
-        distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps)
-    };
-    let bonus_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.bonus_wallet, &sys_info, vault_seeds, distribute_amount, bonus_bps, wallet_fee_bps);
-    let nft_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.nft_rewarder, &sys_info, vault_seeds, distribute_amount, nft_bps, wallet_fee_bps);
-    let plat_paid = distribute_fee(&ctx.accounts.vault, &ctx.accounts.platform_wallet, &sys_info, vault_seeds, distribute_amount, platform_bps, wallet_fee_bps);
+    // Distribute fees and track actual amounts paid (0 if transfer failed) plus whether
+    // the share was redirected to platform due to the rent-safety fallback.
+    let platform_info = ctx.accounts.platform_wallet.to_account_info();
 
-    // Update per-referrer on-chain earnings (manual PDA validation + deserialization)
-    if ref_paid > 0 && player_referrer != Pubkey::default() {
+    let (ref_paid, ref_redirected) = if player_referrer != Pubkey::default() {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.referrer,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps,
+        )
+    } else {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.platform_wallet,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, referral_bps, wallet_fee_bps,
+        )
+    };
+    let (t2_paid, t2_redirected) = if player_tier2 != Pubkey::default() {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.tier2_referrer,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps,
+        )
+    } else {
+        distribute_fee_with_fallback(
+            &ctx.accounts.vault,
+            &ctx.accounts.platform_wallet,
+            &platform_info,
+            &sys_info, vault_seeds, distribute_amount, tier2_bps, wallet_fee_bps,
+        )
+    };
+    let (bonus_paid, _) = distribute_fee_with_fallback(
+        &ctx.accounts.vault, &ctx.accounts.bonus_wallet, &platform_info,
+        &sys_info, vault_seeds, distribute_amount, bonus_bps, wallet_fee_bps,
+    );
+    let (nft_paid, _) = distribute_fee_with_fallback(
+        &ctx.accounts.vault, &ctx.accounts.nft_rewarder, &platform_info,
+        &sys_info, vault_seeds, distribute_amount, nft_bps, wallet_fee_bps,
+    );
+    let (plat_paid, _) = distribute_fee_with_fallback(
+        &ctx.accounts.vault, &ctx.accounts.platform_wallet, &platform_info,
+        &sys_info, vault_seeds, distribute_amount, platform_bps, wallet_fee_bps,
+    );
+
+    // Update per-referrer on-chain earnings (manual PDA validation + deserialization).
+    // Skip when the share was redirected to platform — the referrer did not actually earn it.
+    if ref_paid > 0 && player_referrer != Pubkey::default() && !ref_redirected {
         update_referral_earnings(&ctx.accounts.referral_state, &player_referrer, ctx.program_id, ref_paid);
     }
-    if t2_paid > 0 && player_tier2 != Pubkey::default() {
+    if t2_paid > 0 && player_tier2 != Pubkey::default() && !t2_redirected {
         update_referral_earnings(&ctx.accounts.tier2_referral_state, &player_tier2, ctx.program_id, t2_paid);
     }
 
@@ -330,11 +402,14 @@ pub fn handler(ctx: Context<DepositSol>, amount: u64) -> Result<()> {
     player.total_deposited = player.total_deposited.checked_add(amount).ok_or(RogueTraderError::MathOverflow)?;
     player.deposit_count += 1;
 
-    // Update clearing house fees — track total spread + per-category breakdown
-    // Only count fees as "referral" when they actually went to a referrer (not platform fallback)
-    let actual_ref = if player_referrer != Pubkey::default() { ref_paid } else { 0 };
-    let actual_t2 = if player_tier2 != Pubkey::default() { t2_paid } else { 0 };
-    let fallback_plat = ref_paid - actual_ref + t2_paid - actual_t2;
+    // Update clearing house fees — track total spread + per-category breakdown.
+    // Only count fees as "referral" when they actually went to a referrer:
+    //   - referrer was set (not default), AND
+    //   - the share was NOT redirected to platform by the rent-safety fallback.
+    // Anything that was supposed to go to a referrer but didn't, lands in platform totals.
+    let actual_ref = if player_referrer != Pubkey::default() && !ref_redirected { ref_paid } else { 0 };
+    let actual_t2 = if player_tier2 != Pubkey::default() && !t2_redirected { t2_paid } else { 0 };
+    let fallback_plat = (ref_paid - actual_ref) + (t2_paid - actual_t2);
 
     let ch = &mut ctx.accounts.clearing_house;
     ch.total_deposit_fees = ch.total_deposit_fees.checked_add(total_spread).ok_or(RogueTraderError::MathOverflow)?;
